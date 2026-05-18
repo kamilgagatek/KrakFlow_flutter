@@ -1,8 +1,14 @@
 import 'package:flutter/material.dart';
+import 'dart:math';
 import '../models/task.dart';
-import '../services/task_api_service.dart';
+import '../services/task_sync_service.dart';
+import '../services/task_local_database.dart';
+import 'package:hive_ce_flutter/hive_flutter.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Hive.initFlutter();
+  await Hive.openBox("tasks");
   runApp(const MyApp());
 }
 
@@ -28,7 +34,6 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-
   List<Task> tasks = [];
   bool isLoading = true;
   String? errorMessage;
@@ -39,74 +44,58 @@ class _HomeScreenState extends State<HomeScreen> {
     loadTasks();
   }
 
-  void loadTasks() async {
+  Future<void> loadTasks() async {
     try {
-      final fetchedTasks = await TaskApiService.fetchTasks();
+      await TaskSyncService.loadInitialDataIfNeeded();
+
+      final localTasks = TaskLocalDatabase.getTasks();
 
       setState(() {
-        tasks = fetchedTasks;
+        tasks = localTasks;
         isLoading = false;
       });
-
     } catch (e) {
-
       setState(() {
-        errorMessage = "Nie udało się pobrać danych";
+        errorMessage = "Nie udało się załadować danych";
         isLoading = false;
       });
     }
   }
 
-  void _goToAddTask() async {
+  Future<void> addTask(Task task) async {
+    await TaskLocalDatabase.addTask(task);
+    await loadTasks();
+  }
 
+  Future<void> updateTask(Task task) async {
+    await TaskLocalDatabase.updateTask(task);
+    await loadTasks();
+  }
+
+  void _goToAddTask() async {
     final Task? newTask = await Navigator.push(
       context,
-      PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            AddTaskScreen(),
-
-        transitionsBuilder:
-            (context, animation, secondaryAnimation, child) {
-
-          final offsetAnimation = Tween<Offset>(
-            begin: const Offset(1.0, 0.0),
-            end: Offset.zero,
-          ).animate(animation);
-
-          return SlideTransition(
-            position: offsetAnimation,
-            child: child,
-          );
-        },
+      MaterialPageRoute(
+        builder: (context) => AddTaskScreen(),
       ),
     );
 
     if (newTask != null) {
-
-      setState(() {
-        tasks.add(newTask);
-      });
+      await addTask(newTask);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-
     return Scaffold(
       appBar: AppBar(
         title: const Text("KrakFlow"),
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
       ),
-
       body: isLoading
-
-          ? const Center(
-        child: CircularProgressIndicator(),
-      )
-
+          ? const Center(child: CircularProgressIndicator())
           : errorMessage != null
-
           ? Center(
         child: Text(
           errorMessage!,
@@ -117,12 +106,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       )
-
           : Column(
         children: [
-
           const SizedBox(height: 20),
-
           Text(
             "Masz dziś ${tasks.length} zadań",
             style: const TextStyle(
@@ -130,48 +116,66 @@ class _HomeScreenState extends State<HomeScreen> {
               fontWeight: FontWeight.bold,
             ),
           ),
-
           const SizedBox(height: 10),
-
           Expanded(
             child: ListView.builder(
               itemCount: tasks.length,
-
               itemBuilder: (context, index) {
-
                 final item = tasks[index];
 
-                return TaskCard(
-                  title: item.title,
+                return GestureDetector(
+                  onTap: () async {
+                    final Task? updatedTask = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) =>
+                            AddTaskScreen(editTask: item),
+                      ),
+                    );
 
-                  subtitle:
-                  "termin: ${item.deadline} | priorytet: ${item.priority}",
+                    if (updatedTask != null) {
+                      await updateTask(updatedTask);
+                    }
+                  },
+                  child: TaskCard(
+                    title: item.title,
+                    subtitle:
+                    "termin: ${item.deadline} | priorytet: ${item.priority}",
+                    icon: item.done
+                        ? Icons.check_circle
+                        : Icons.task,
+                    onToggle: (value) async {
+                      final updated = Task(
+                        id: item.id,
+                        title: item.title,
+                        deadline: item.deadline,
+                        priority: item.priority,
+                        done: value ?? false,
+                      );
 
-                  icon: item.done
-                      ? Icons.check_circle
-                      : Icons.task,
+                      await updateTask(updated);
+                    },
+                    done: item.done,
+                  ),
                 );
               },
             ),
           ),
         ],
       ),
-
       floatingActionButton: FloatingActionButton(
         onPressed: _goToAddTask,
         backgroundColor: Colors.blue,
-        child: const Icon(
-          Icons.add,
-          color: Colors.white,
-        ),
+        child: const Icon(Icons.add, color: Colors.white),
       ),
     );
   }
 }
 
 class AddTaskScreen extends StatelessWidget {
+  AddTaskScreen({super.key, this.editTask});
 
-  AddTaskScreen({super.key});
+  final Task? editTask;
 
   final titleController = TextEditingController();
   final deadlineController = TextEditingController();
@@ -179,74 +183,65 @@ class AddTaskScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (editTask != null) {
+      titleController.text = editTask!.title;
+      deadlineController.text = editTask!.deadline;
+      priorityController.text = editTask!.priority;
+    }
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Nowe zadanie"),
+        title: Text(editTask == null ? "Nowe zadanie" : "Edytuj zadanie"),
       ),
-
       body: Padding(
         padding: const EdgeInsets.all(16),
-
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-
             TextField(
               controller: titleController,
-
               decoration: const InputDecoration(
-                labelText: "Tytuł zadania",
+                labelText: "Tytuł",
                 border: OutlineInputBorder(),
               ),
             ),
-
             const SizedBox(height: 15),
-
             TextField(
               controller: deadlineController,
-
               decoration: const InputDecoration(
                 labelText: "Termin",
                 border: OutlineInputBorder(),
               ),
             ),
-
             const SizedBox(height: 15),
-
             TextField(
               controller: priorityController,
-
               decoration: const InputDecoration(
-                labelText: "Priorytet (wysoki/średni/niski)",
+                labelText: "Priorytet",
                 border: OutlineInputBorder(),
               ),
             ),
-
             const SizedBox(height: 25),
-
             SizedBox(
               width: double.infinity,
-
               child: ElevatedButton(
                 onPressed: () {
+                  if (titleController.text.isEmpty) return;
 
-                  if (titleController.text.isNotEmpty) {
+                  final task = Task(
+                    id: editTask?.id ?? Random().nextInt(1000000),
+                    title: titleController.text,
+                    deadline: deadlineController.text,
+                    priority: priorityController.text,
+                    done: editTask?.done ?? false,
+                  );
 
-                    final newTask = Task(
-                      title: titleController.text,
-                      deadline: deadlineController.text,
-                      priority: priorityController.text,
-                      done: false,
-                    );
-
-                    Navigator.pop(context, newTask);
-                  }
+                  Navigator.pop(context, task);
                 },
-
-                child: const Text("Zapisz zadanie"),
+                child: Text(editTask == null
+                    ? "Dodaj zadanie"
+                    : "Zapisz zmiany"),
               ),
-            ),
+            )
           ],
         ),
       ),
@@ -255,41 +250,34 @@ class AddTaskScreen extends StatelessWidget {
 }
 
 class TaskCard extends StatelessWidget {
-
   final String title;
   final String subtitle;
   final IconData icon;
+  final bool done;
+  final Function(bool?) onToggle;
 
   const TaskCard({
     super.key,
     required this.title,
     required this.subtitle,
     required this.icon,
+    required this.done,
+    required this.onToggle,
   });
 
   @override
   Widget build(BuildContext context) {
-
     return Card(
-      margin: const EdgeInsets.symmetric(
-        horizontal: 10,
-        vertical: 5,
-      ),
-
+      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       child: ListTile(
-        leading: Icon(
-          icon,
-          color: Colors.blue,
-        ),
-
-        title: Text(
-          title,
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-
+        leading: Icon(icon, color: Colors.blue),
+        title: Text(title,
+            style: const TextStyle(fontWeight: FontWeight.bold)),
         subtitle: Text(subtitle),
+        trailing: Checkbox(
+          value: done,
+          onChanged: onToggle,
+        ),
       ),
     );
   }

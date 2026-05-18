@@ -28,6 +28,7 @@ class TaskApiService {
 
       return todos.map<Task>((todo) {
         return Task(
+          id: todo["id"],
           title: todo["todo"],
           done: todo["completed"],
           priority:
